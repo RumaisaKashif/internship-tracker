@@ -1,0 +1,94 @@
+{
+  "name": "Resume Optimizer Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "optimize",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "id": "webhook"
+    },
+    {
+      "parameters": {
+        "url": "=https://r.jina.ai/{{ $json.body.url }}",
+        "method": "GET",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Fetch Job Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 300],
+      "id": "fetch-job"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "tableId": "user_profile",
+        "filterType": "none",
+        "limit": 1
+      },
+      "name": "Get Resume",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [400, 450],
+      "id": "get-resume",
+      "credentials": { "supabaseApi": { "id": "SUPABASE_CRED_ID", "name": "Supabase" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 4096,
+          "messages": [{
+            "role": "user",
+            "content": "=Optimize this resume for the job. Return JSON only with keys: optimizedResume, coverLetter, matchScore (0-100).\n\nJOB PAGE:\n{{ $('Fetch Job Page').item.json.body?.substring(0, 4000) }}\n\nRESUME:\n{{ $('Get Resume').item.json[0]?.base_resume }}\n\nTONE: {{ $('Webhook').item.json.body?.tone || 'professional' }}"
+          }]
+        }
+      },
+      "name": "Claude Optimize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 375],
+      "id": "claude-optimize"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.content[0].text }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 375],
+      "id": "respond"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[
+        { "node": "Fetch Job Page", "type": "main", "index": 0 },
+        { "node": "Get Resume", "type": "main", "index": 0 }
+      ]]
+    },
+    "Fetch Job Page": { "main": [[{ "node": "Claude Optimize", "type": "main", "index": 0 }]] },
+    "Get Resume": { "main": [[{ "node": "Claude Optimize", "type": "main", "index": 0 }]] },
+    "Claude Optimize": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "1"
+}

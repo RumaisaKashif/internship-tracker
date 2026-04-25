@@ -1,0 +1,188 @@
+{
+  "name": "Gmail Internship Scanner",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 48 }]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "id": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gmail-scan",
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 450],
+      "id": "webhook-trigger"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 50,
+        "filters": {
+          "q": "from:(linkedin.com OR handshake.com OR internship OR hiring OR opportunity OR job alert) newer_than:2d",
+          "labelIds": ["INBOX"]
+        },
+        "options": {
+          "format": "full",
+          "dataPropertyAttachmentsPrefixName": "attachment_"
+        }
+      },
+      "name": "Gmail Get Messages",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [500, 300],
+      "id": "gmail-get",
+      "credentials": { "gmailOAuth2": { "id": "GMAIL_CRED_ID", "name": "Gmail Account" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate and extract email bodies\nconst items = $input.all();\nconst seen = new Set();\nconst result = [];\n\nfor (const item of items) {\n  const msg = item.json;\n  const subject = msg.subject || '';\n  const from = msg.from || '';\n  const body = msg.text || msg.html || '';\n  \n  const key = subject.toLowerCase().trim();\n  if (seen.has(key)) continue;\n  seen.add(key);\n  \n  // Filter relevant emails\n  const relevant = [\n    'internship', 'intern', 'opportunity', 'job', 'hiring', 'role',\n    'engineer', 'researcher', 'analyst', 'quant'\n  ];\n  const text = (subject + ' ' + body).toLowerCase();\n  if (!relevant.some(kw => text.includes(kw))) continue;\n  \n  result.push({\n    subject,\n    from,\n    body: body.substring(0, 3000), // Limit for Claude\n    date: msg.date || new Date().toISOString()\n  });\n}\n\nreturn result.map(r => ({ json: r }));"
+      },
+      "name": "Deduplicate Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300],
+      "id": "dedup-emails"
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "name": "Batch Emails",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [900, 300],
+      "id": "batch-emails"
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model": "claude-haiku-4-5-20251001",
+          "max_tokens": 2048,
+          "messages": [{
+            "role": "user",
+            "content": "=Extract internship listings from these email subjects/bodies. Return ONLY valid JSON array of objects with these fields: role, company, location, loc_type (remote/hybrid/onsite), wage (number or null), wage_period (month/week or null), paid (boolean), description (max 200 chars), requirements (max 200 chars), skills_required (string array), deadline (YYYY-MM-DD or null), apply_url (string or null), source (LinkedIn/Handshake/Email). Only include actual internship listings, not newsletters. Emails:\n\n{{ $json.subject }}\n\n{{ $json.body }}"
+          }]
+        }
+      },
+      "name": "Claude Extract Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 300],
+      "id": "claude-extract"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude response and score listings\nconst items = $input.all();\nconst USER_SKILLS = [\n  'python', 'pytorch', 'tensorflow', 'langchain', 'fastapi', 'react',\n  'docker', 'aws', 'supabase', 'redis', 'ml', 'ai', 'machine learning',\n  'computer vision', 'rag', 'llm', 'diffusion', 'transformer', 'c++', 'java'\n];\n\nconst result = [];\n\nfor (const item of items) {\n  const content = item.json?.content?.[0]?.text || '';\n  let listings = [];\n  \n  try {\n    const jsonMatch = content.match(/\\[.*\\]/s);\n    if (jsonMatch) listings = JSON.parse(jsonMatch[0]);\n  } catch (e) { continue; }\n  \n  for (const listing of listings) {\n    // Score against user skills\n    const skills = (listing.skills_required || []).map(s => s.toLowerCase());\n    const matched = skills.filter(s => USER_SKILLS.some(us => s.includes(us) || us.includes(s)));\n    const matchScore = Math.min(100, Math.round((matched.length / Math.max(skills.length, 1)) * 100));\n    \n    // Calculate days until deadline\n    let daysUntilDeadline = null;\n    if (listing.deadline) {\n      const diff = new Date(listing.deadline) - new Date();\n      daysUntilDeadline = Math.ceil(diff / (1000 * 60 * 60 * 24));\n    }\n    \n    result.push({\n      json: {\n        ...listing,\n        match_score: matchScore,\n        days_until_deadline: daysUntilDeadline,\n        status: 'saved',\n        is_new: true,\n        scan_id: $('Webhook Trigger').first()?.json?.body?.scan_id || null,\n        created_at: new Date().toISOString(),\n        updated_at: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn result;"
+      },
+      "name": "Score Listings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300],
+      "id": "score-listings"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "tableId": "internships",
+        "onConflict": "role,company",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "role", "fieldValue": "={{ $json.role }}" },
+            { "fieldId": "company", "fieldValue": "={{ $json.company }}" },
+            { "fieldId": "location", "fieldValue": "={{ $json.location }}" },
+            { "fieldId": "loc_type", "fieldValue": "={{ $json.loc_type }}" },
+            { "fieldId": "wage", "fieldValue": "={{ $json.wage }}" },
+            { "fieldId": "paid", "fieldValue": "={{ $json.paid }}" },
+            { "fieldId": "description", "fieldValue": "={{ $json.description }}" },
+            { "fieldId": "requirements", "fieldValue": "={{ $json.requirements }}" },
+            { "fieldId": "skills_required", "fieldValue": "={{ $json.skills_required }}" },
+            { "fieldId": "match_score", "fieldValue": "={{ $json.match_score }}" },
+            { "fieldId": "deadline", "fieldValue": "={{ $json.deadline }}" },
+            { "fieldId": "days_until_deadline", "fieldValue": "={{ $json.days_until_deadline }}" },
+            { "fieldId": "status", "fieldValue": "saved" },
+            { "fieldId": "source", "fieldValue": "={{ $json.source }}" },
+            { "fieldId": "apply_url", "fieldValue": "={{ $json.apply_url }}" },
+            { "fieldId": "is_new", "fieldValue": "=true" },
+            { "fieldId": "scan_id", "fieldValue": "={{ $json.scan_id }}" }
+          ]
+        }
+      },
+      "name": "Upsert to Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1500, 300],
+      "id": "upsert-supabase",
+      "credentials": { "supabaseApi": { "id": "SUPABASE_CRED_ID", "name": "Supabase" } }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "scan_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "started_at", "fieldValue": "={{ $now }}" },
+            { "fieldId": "completed_at", "fieldValue": "={{ $now }}" },
+            { "fieldId": "listings_found", "fieldValue": "={{ $items().length }}" },
+            { "fieldId": "listings_added", "fieldValue": "={{ $items().length }}" },
+            { "fieldId": "status", "fieldValue": "completed" },
+            { "fieldId": "log_text", "fieldValue": "Scan complete via n8n Gmail Scanner" }
+          ]
+        }
+      },
+      "name": "Log Scan",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1700, 300],
+      "id": "log-scan",
+      "credentials": { "supabaseApi": { "id": "SUPABASE_CRED_ID", "name": "Supabase" } }
+    },
+    {
+      "parameters": {
+        "sendTo": "rumaisa.kashif2109@gmail.com",
+        "subject": "=🎯 Internship Scan Complete — {{ $items().length }} new listings",
+        "emailType": "html",
+        "message": "=<h2>Scan Results</h2><p>Found {{ $items().length }} new internship listings.</p><p>View them at your <a href='https://your-app.vercel.app'>Internship Tracker</a>.</p>"
+      },
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1900, 300],
+      "id": "send-digest",
+      "credentials": { "gmailOAuth2": { "id": "GMAIL_CRED_ID", "name": "Gmail Account" } }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": { "main": [[{ "node": "Gmail Get Messages", "type": "main", "index": 0 }]] },
+    "Webhook Trigger": { "main": [[{ "node": "Gmail Get Messages", "type": "main", "index": 0 }]] },
+    "Gmail Get Messages": { "main": [[{ "node": "Deduplicate Emails", "type": "main", "index": 0 }]] },
+    "Deduplicate Emails": { "main": [[{ "node": "Batch Emails", "type": "main", "index": 0 }]] },
+    "Batch Emails": { "main": [[{ "node": "Claude Extract Jobs", "type": "main", "index": 0 }]] },
+    "Claude Extract Jobs": { "main": [[{ "node": "Score Listings", "type": "main", "index": 0 }]] },
+    "Score Listings": { "main": [[{ "node": "Upsert to Supabase", "type": "main", "index": 0 }]] },
+    "Upsert to Supabase": { "main": [[{ "node": "Log Scan", "type": "main", "index": 0 }]] },
+    "Log Scan": { "main": [[{ "node": "Send Digest Email", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "1"
+}

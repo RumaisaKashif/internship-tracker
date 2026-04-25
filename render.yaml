@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: n8n-internship-tracker
+    runtime: docker
+    dockerCommand: "n8n start"
+    dockerfilePath: ""
+    image:
+      url: docker.io/n8nio/n8n:latest
+    plan: free
+    disk:
+      name: n8n-data
+      mountPath: /home/node/.n8n
+      sizeGB: 1
+    envVars:
+      - key: N8N_BASIC_AUTH_ACTIVE
+        value: "true"
+      - key: N8N_BASIC_AUTH_USER
+        value: admin
+      - key: N8N_BASIC_AUTH_PASSWORD
+        sync: false
+      - key: N8N_ENCRYPTION_KEY
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: N8N_HOST
+        fromService:
+          type: web
+          name: n8n-internship-tracker
+          property: host
+      - key: N8N_PROTOCOL
+        value: https
+      - key: N8N_PORT
+        value: "5678"
+      - key: GENERIC_TIMEZONE
+        value: Asia/Singapore
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+    healthCheckPath: /healthz

@@ -1,0 +1,115 @@
+{
+  "name": "Application Date Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 48 }]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "id": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Target companies to monitor\nconst companies = [\n  { name: 'Google', query: 'Google internship 2027 application open date site:levels.fyi OR site:reddit.com/r/csMajors' },\n  { name: 'Meta', query: 'Meta Facebook internship 2027 application dates reddit' },\n  { name: 'Amazon', query: 'Amazon SDE intern 2027 application open site:reddit.com/r/csMajors' },\n  { name: 'Microsoft', query: 'Microsoft intern 2027 application window dates' },\n  { name: 'Citadel', query: 'Citadel Securities internship 2027 application opens' },\n  { name: 'Two Sigma', query: 'Two Sigma internship 2027 application timeline' },\n  { name: 'Jane Street', query: 'Jane Street internship 2027 FTTP FOCUS application' },\n  { name: 'Stripe', query: 'Stripe internship 2027 application date' },\n  { name: 'Anthropic', query: 'Anthropic internship 2027 software engineer' },\n  { name: 'Palantir', query: 'Palantir FDE internship 2027 application dates' }\n];\n\nreturn companies.map(c => ({ json: c }));"
+      },
+      "name": "Build Search Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 300],
+      "id": "build-queries"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.tavily.com/search",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "api_key": "={{ $env.TAVILY_API_KEY }}",
+          "query": "={{ $json.query }}",
+          "search_depth": "basic",
+          "max_results": 5
+        }
+      },
+      "name": "Search Web",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 300],
+      "id": "search-web"
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model": "claude-haiku-4-5-20251001",
+          "max_tokens": 512,
+          "messages": [{
+            "role": "user",
+            "content": "=Extract application open date for {{ $('Build Search Queries').item.json.name }} internship 2027 from these search results.\n\nSearch results:\n{{ JSON.stringify($json.results?.map(r => r.content).join('\\n\\n') || '') }}\n\nReturn JSON only:\n{\n  \"expected_date\": \"YYYY-MM-DD or null\",\n  \"confidence\": 0.0-1.0,\n  \"urgency\": \"open_now|opening_soon|upcoming|unknown\",\n  \"notes\": \"brief summary of what was found\",\n  \"source_url\": \"most credible URL from results or null\"\n}"
+          }]
+        }
+      },
+      "name": "Claude Extract Dates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 300],
+      "id": "claude-dates"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ JSON.parse($json.content[0].text).confidence }}", "operation": "largerEqual", "value2": 0.7 }]
+        }
+      },
+      "name": "IF High Confidence",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "id": "if-confidence"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "tableId": "timeline_events",
+        "onConflict": "company_id",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "event_type", "fieldValue": "Applications Open" },
+            { "fieldId": "expected_date", "fieldValue": "={{ JSON.parse($('Claude Extract Dates').item.json.content[0].text).expected_date }}" },
+            { "fieldId": "confidence", "fieldValue": "={{ JSON.parse($('Claude Extract Dates').item.json.content[0].text).confidence }}" },
+            { "fieldId": "urgency", "fieldValue": "={{ JSON.parse($('Claude Extract Dates').item.json.content[0].text).urgency }}" },
+            { "fieldId": "notes", "fieldValue": "={{ JSON.parse($('Claude Extract Dates').item.json.content[0].text).notes }}" },
+            { "fieldId": "source_url", "fieldValue": "={{ JSON.parse($('Claude Extract Dates').item.json.content[0].text).source_url }}" },
+            { "fieldId": "verified_at", "fieldValue": "={{ $now }}" }
+          ]
+        }
+      },
+      "name": "Update Timeline",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1200, 250],
+      "id": "update-timeline",
+      "credentials": { "supabaseApi": { "id": "SUPABASE_CRED_ID", "name": "Supabase" } }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": { "main": [[{ "node": "Build Search Queries", "type": "main", "index": 0 }]] },
+    "Build Search Queries": { "main": [[{ "node": "Search Web", "type": "main", "index": 0 }]] },
+    "Search Web": { "main": [[{ "node": "Claude Extract Dates", "type": "main", "index": 0 }]] },
+    "Claude Extract Dates": { "main": [[{ "node": "IF High Confidence", "type": "main", "index": 0 }]] },
+    "IF High Confidence": { "main": [[{ "node": "Update Timeline", "type": "main", "index": 0 }], []] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "1"
+}
