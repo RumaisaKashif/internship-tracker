@@ -1,9 +1,8 @@
 services:
   - type: web
     name: n8n-internship-tracker
-    runtime: docker
+    runtime: image
     dockerCommand: "n8n start"
-    dockerfilePath: ""
     image:
       url: docker.io/n8nio/n8n:latest
     plan: free
