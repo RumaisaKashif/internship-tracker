@@ -7,10 +7,12 @@ services:
     image:
       url: docker.io/n8nio/n8n:latest
     plan: free
-    disk:
-      name: n8n-data
-      mountPath: /home/node/.n8n
-      sizeGB: 1
+    # Free tier does not support persistent disks.
+    # Uncomment this block if you upgrade Render and want durable n8n storage.
+    # disk:
+    #   name: n8n-data
+    #   mountPath: /home/node/.n8n
+    #   sizeGB: 1
     envVars:
       - key: N8N_BASIC_AUTH_ACTIVE
         value: "true"
